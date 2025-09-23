@@ -9,11 +9,13 @@ hyperparameters.
 If you find this code useful, please reference in your paper:
 
 ```
-@article{hafner2023dreamerv3,
-  title={Mastering Diverse Domains through World Models},
+@article{hafner2025dreamerv3,
+  title={Mastering diverse control tasks through world models},
   author={Hafner, Danijar and Pasukonis, Jurgis and Ba, Jimmy and Lillicrap, Timothy},
-  journal={arXiv preprint arXiv:2301.04104},
-  year={2023}
+  journal={Nature},
+  pages={1--7},
+  year={2025},
+  publisher={Nature Publishing Group}
 }
 ```
 
@@ -116,6 +118,6 @@ implementation has been tested to reproduce the official results on a range of
 environments.
 
 [jax]: https://github.com/google/jax#pip-installation-gpu-cuda
-[paper]: https://arxiv.org/pdf/2301.04104v1.pdf
+[paper]: https://arxiv.org/pdf/2301.04104
 [website]: https://danijar.com/dreamerv3
 [tweet]: https://twitter.com/danijarh/status/1613161946223677441
