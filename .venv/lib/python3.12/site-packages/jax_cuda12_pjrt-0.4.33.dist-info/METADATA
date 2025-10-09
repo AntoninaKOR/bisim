@@ -1,0 +1,12 @@
+Metadata-Version: 2.1
+Name: jax-cuda12-pjrt
+Version: 0.4.33
+Summary: JAX XLA PJRT Plugin for NVIDIA GPUs
+Home-page: https://github.com/google/jax
+Author: JAX team
+Author-email: jax-dev@google.com
+License: Apache-2.0
+Classifier: Development Status :: 3 - Alpha
+Classifier: Programming Language :: Python :: 3
+Description-Content-Type: text/markdown
+

@@ -5,3 +5,16 @@ __pycache__/
 *.egg-info
 MUJOCO_LOG.TXT
 ;
+
+# Virtual environment
+venv/
+env/
+
+# Environment variables
+.env
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# VS Code settings
+.vscode/

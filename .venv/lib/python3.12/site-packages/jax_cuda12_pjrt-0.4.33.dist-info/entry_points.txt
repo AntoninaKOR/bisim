@@ -1,0 +1,2 @@
+[jax_plugins]
+xla_cuda12 = jax_plugins.xla_cuda12

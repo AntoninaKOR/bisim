@@ -46,7 +46,7 @@ defaults:
     chunksize: 1024
 
   run:
-    steps: 1e10
+    steps:  1e4
     duration: 0
     train_ratio: 32.0
     log_every: 120
@@ -70,7 +70,7 @@ defaults:
     debug: True
 
   jax:
-    platform: cuda
+    platform: cpu
     compute_dtype: bfloat16
     policy_devices: [0]
     train_devices: [0]

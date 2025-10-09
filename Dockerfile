@@ -2,11 +2,11 @@
 # docker run -it --rm -v ~/logdir/docker:/logdir img \
 #   python main.py --logdir /logdir/{timestamp} --configs minecraft debug --task minecraft_diamond
 
-FROM ghcr.io/nvidia/driver:7c5f8932-550.144.03-ubuntu24.04
+#FROM ghcr.io/nvidia/driver:7c5f8932-550.144.03-ubuntu24.04
 
 # System
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=America/San_Francisco
+#ENV DEBIAN_FRONTEND=noninteractive
+#ENV TZ=America/San_Francisco
 RUN apt-get update && apt-get install -y \
   ffmpeg git vim curl software-properties-common grep \
   libglew-dev x11-xserver-utils xvfb wget \
@@ -35,7 +35,7 @@ RUN pip install https://github.com/danijar/minerl/releases/download/v0.4.4-patch
 RUN chown -R 1000:root /venv/lib/python3.11/site-packages/minerl
 
 # Requirements
-RUN pip install jax[cuda]==0.5.0
+RUN pip install jax==0.5.0
 COPY requirements.txt requirements.txt
 RUN pip install -r requirements.txt
 
