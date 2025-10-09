@@ -32,6 +32,7 @@ class BisimAgent(embodied.jax.Agent):
       r"--- |   \ _ _ ___ __ _ _ __  ___ _ \ \ / /__ / ---",
       r"--- | |) | '_/ -_) _` | '  \/ -_) '/\ V / |_ \ ---",
       r"--- |___/|_| \___\__,_|_|_|_\___|_|  \_/ |___/ ---",
+      r"---------------------bisim------------------------"
   ]
 
   def __init__(self, obs_space, act_space, config):
@@ -261,52 +262,8 @@ class BisimAgent(embodied.jax.Agent):
     total_loss = transition_loss + reward_loss
     return total_loss
 
+ 
   def loss(self, carry, obs, prevact, training=True):
-    """
-    Unified update method for all bisimulation components (adapted from methods.py).
-    This method combines encoder updates, transition/reward model updates, and 
-    standard agent updates in a coordinated fashion.
-    
-    Args:
-        carry: agent state
-        obs: observations
-        prevact: previous actions
-        training: whether in training mode
-    Returns:
-        Updated carry, losses dict, and metrics dict
-    """
-    # Get basic loss computation
-    loss_value, (new_carry, entries, outs, base_metrics) = self.loss(
-        carry, obs, prevact, training)
-    
-    # Extract components for bisim updates
-    repfeat = outs['repfeat']
-    B, T = obs['is_first'].shape
-    
-    # Prepare data for bisim updates
-    repfeat_now = jax.tree.map(lambda x: x[:, :-1], repfeat)
-    repfeat_next = jax.tree.map(lambda x: x[:, 1:], repfeat)
-    act_now = {k: v[:, :-1] for k, v in prevact.items()}
-    rew_now = obs['reward'][:, :-1]
-    
-    # Additional metrics for bisim components
-    bisim_metrics = {}
-    
-    # Log individual component losses
-    encoder_loss = self.update_encoder_bisim(repfeat_now, act_now, rew_now, training)
-    transition_loss = self.update_transition_reward_model_loss(
-        repfeat_now, act_now, repfeat_next, rew_now, training)
-    
-    bisim_metrics['bisim_encoder_loss'] = encoder_loss
-    bisim_metrics['bisim_transition_loss'] = transition_loss
-    
-    # Combine with base metrics
-    combined_metrics = {**base_metrics, **bisim_metrics}
-    
-    return new_carry, outs['losses'], combined_metrics
-  
-
-  def loss(self, carry, obs, prevact, training):
     enc_carry, dyn_carry = carry
     reset = obs['is_first']
     B, T = reset.shape
@@ -443,42 +400,52 @@ class BisimAgent(embodied.jax.Agent):
         except KeyError:
           print(f'Skipping gradnorm summary for missing loss: {key}')
 
-    # # Open loop
-    # firsthalf = lambda xs: jax.tree.map(lambda x: x[:RB, :T // 2], xs)
-    # secondhalf = lambda xs: jax.tree.map(lambda x: x[:RB, T // 2:], xs)
-    # dyn_carry = jax.tree.map(lambda x: x[:RB], dyn_carry)
-    # dec_carry = jax.tree.map(lambda x: x[:RB], dec_carry)
-    # dyn_carry, _, obsfeat = self.dyn.observe(
-    #     dyn_carry, firsthalf(outs['tokens']), firsthalf(prevact),
-    #     firsthalf(obs['is_first']), training=False)
-    # _, imgfeat, _ = self.dyn.imagine(
-    #     dyn_carry, secondhalf(prevact), length=T - T // 2, training=False)
-    # dec_carry, _, obsrecons = self.dec(
-    #     dec_carry, obsfeat, firsthalf(obs['is_first']), training=False)
-    # dec_carry, _, imgrecons = self.dec(
-    #     dec_carry, imgfeat, jnp.zeros_like(secondhalf(obs['is_first'])),
-    #     training=False)
-
+    # Open loop
+    firsthalf = lambda xs: jax.tree.map(lambda x: x[:RB, :T // 2], xs)
+    secondhalf = lambda xs: jax.tree.map(lambda x: x[:RB, T // 2:], xs)
+    dyn_carry = jax.tree.map(lambda x: x[:RB], dyn_carry)
+    dyn_carry, _, obsfeat = self.dyn.observe(
+        dyn_carry, firsthalf(outs['tokens']), firsthalf(prevact),
+        firsthalf(obs['is_first']), training=False)
+    _, imgfeat, _ = self.dyn.imagine(
+        dyn_carry, secondhalf(prevact), length=T - T // 2, training=False)
+    
     # Video preds
-    # for key in self.dec.imgkeys:
-    #   assert obs[key].dtype == jnp.uint8
-    #   true = obs[key][:RB]
-    #   pred = jnp.concatenate([obsrecons[key].pred(), imgrecons[key].pred()], 1)
-    #   pred = jnp.clip(pred * 255, 0, 255).astype(jnp.uint8)
-    #   error = ((i32(pred) - i32(true) + 255) / 2).astype(np.uint8)
-    #   video = jnp.concatenate([true, pred, error], 2)
 
-    #   video = jnp.pad(video, [[0, 0], [0, 0], [2, 2], [2, 2], [0, 0]])
-    #   mask = jnp.zeros(video.shape, bool).at[:, :, 2:-2, 2:-2, :].set(True)
-    #   border = jnp.full((T, 3), jnp.array([0, 255, 0]), jnp.uint8)
-    #   border = border.at[T // 2:].set(jnp.array([255, 0, 0], jnp.uint8))
-    #   video = jnp.where(mask, video, border[None, :, None, None, :])
-    #   video = jnp.concatenate([video, 0 * video[:, :10]], 1)
-
-    #   B, T, H, W, C = video.shape
-    #   grid = video.transpose((1, 2, 0, 3, 4)).reshape((T, H, B * W, C))
-    #   metrics[f'openloop/{key}'] = grid
-
+    obs_tensor = self.feat2tensor(obsfeat)  # [RB, T//2, feat_dim]
+    img_tensor = self.feat2tensor(imgfeat)  # [RB, T//2, feat_dim]
+    
+    feat_tensor = jnp.concatenate([obs_tensor, img_tensor], axis=1)  # [RB, T, feat_dim]
+    
+    feat_dim = feat_tensor.shape[-1]
+    height = int(jnp.sqrt(feat_dim))
+    width = feat_dim // height
+    
+    # Truncate to make perfect rectangle
+    used_dims = height * width
+    feat_reshaped = feat_tensor[:, :, :used_dims].reshape(RB, T, height, width, 1)
+    
+    # Normalize to [0, 255] for visualization
+    feat_min = feat_reshaped.min(axis=(2, 3), keepdims=True)
+    feat_max = feat_reshaped.max(axis=(2, 3), keepdims=True)
+    feat_norm = (feat_reshaped - feat_min) / (feat_max - feat_min + 1e-8)
+    feat_img = (feat_norm * 255).astype(jnp.uint8)
+    
+    # Convert to RGB
+    feat_img = jnp.repeat(feat_img, 3, axis=-1)
+    
+    # Add borders (green for obs, red for imagination)
+    feat_img = jnp.pad(feat_img, [[0, 0], [0, 0], [2, 2], [2, 2], [0, 0]])
+    mask = jnp.zeros(feat_img.shape, bool).at[:, :, 2:-2, 2:-2, :].set(True)
+    border = jnp.full((T, 3), jnp.array([0, 255, 0]), jnp.uint8)
+    border = border.at[T // 2:].set(jnp.array([255, 0, 0], jnp.uint8))
+    feat_img = jnp.where(mask, feat_img, border[None, :, None, None, :])
+    
+    # Add spacing and create grid
+    feat_img = jnp.concatenate([feat_img, 0 * feat_img[:, :10]], 1)
+    B, T, H, W, C = feat_img.shape
+    grid = feat_img.transpose((1, 2, 0, 3, 4)).reshape((T, H, B * W, C))
+    metrics[f'openloop/dyn_features'] = grid
     carry = (*new_carry, {k: data[k][:, -1] for k in self.act_space})
     return carry, metrics
 
