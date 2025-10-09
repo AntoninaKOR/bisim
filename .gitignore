@@ -7,11 +7,8 @@ MUJOCO_LOG.TXT
 ;
 
 # Virtual environment
-venv/
-env/
+.venv/
 
-# Environment variables
-.env
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
