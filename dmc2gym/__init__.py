@@ -5,9 +5,9 @@ from gym.envs.registration import register
 def make(
     domain_name,
     task_name,
-    resource_files,
-    img_source,
-    total_frames,
+    resource_files=None,
+    img_source=None,
+    total_frames=1000,
     seed=1,
     visualize_reward=True,
     from_pixels=False,
@@ -26,7 +26,7 @@ def make(
     # shorten episode length
     max_episode_steps = (episode_length + frame_skip - 1) // frame_skip
 
-    if not env_id in gym.envs.registry.env_specs:
+    if env_id not in gym.envs.registry:
         register(
             id=env_id,
             entry_point='dmc2gym.wrappers:DMCWrapper',
