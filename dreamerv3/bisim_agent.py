@@ -32,7 +32,7 @@ class BisimAgent(embodied.jax.Agent):
       r"--- |   \ _ _ ___ __ _ _ __  ___ _ \ \ / /__ / ---",
       r"--- | |) | '_/ -_) _` | '  \/ -_) '/\ V / |_ \ ---",
       r"--- |___/|_| \___\__,_|_|_|_\___|_|  \_/ |___/ ---",
-      r"---------------------bisim------------------------"
+      r"---------------------bisim------------------------",
   ]
 
   def __init__(self, obs_space, act_space, config):
@@ -334,14 +334,14 @@ class BisimAgent(embodied.jax.Agent):
     act_now = {k: v[:, :-1] for k, v in prevact.items()}
     rew_now = obs['reward'][:, :-1]
     
-    # Enhanced encoder bisim loss (from methods.py)
+    # Enhanced encoder bisim loss 
     encoder_bisim_loss = self.update_encoder_bisim(repfeat_now, act_now, rew_now, training)
     
-    # Transition and reward model loss (from methods.py)
+    # Transition and reward model loss 
     transition_reward_loss = self.update_transition_reward_model_loss(
         repfeat_now, act_now, repfeat_next, rew_now, training)
     
-    # Combine bisimilarity-related losses (methods.py approach)
+    # Combine bisimilarity-related losses 
     total_bisim_loss = bisim_coef * encoder_bisim_loss + transition_coef * transition_reward_loss
     losses['bisim'] = total_bisim_loss
 
