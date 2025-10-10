@@ -19,7 +19,7 @@ class DMC(embodied.Env):
   )
 
   def __init__(
-      self, env, repeat=1, size=(64, 64), proprio=True, image=True, camera=-1):
+      self, env, repeat=1, size=(64, 64), proprio=True, image=True, circle_on_back=True, camera=-1):
     if 'MUJOCO_GL' not in os.environ:
       os.environ['MUJOCO_GL'] = 'egl'
     if isinstance(env, str):
@@ -38,6 +38,8 @@ class DMC(embodied.Env):
         env = getattr(basic_rodent_2020, task)()
       else:
         env = suite.load(domain, task)
+        if (circle_on_back):
+          env=embodied.wrappers.CircleOnBackWrapper(env)
     self._dmenv = env
     self._env = from_dm.FromDM(self._dmenv)
     self._env = embodied.wrappers.ActionRepeat(self._env, repeat)
