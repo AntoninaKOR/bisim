@@ -29,7 +29,7 @@ def main(argv=None):
   config = elements.Flags(config).parse(other)
   config = config.update(logdir=(
       config.logdir.format(timestamp=elements.timestamp())))
-  use_bisim = config.get('use_bisim_agent', False)
+  use_bisim = config.agent.use_bisim_agent
   
   if use_bisim:
     from .bisim_agent import BisimAgent as Agent
@@ -132,7 +132,7 @@ def main(argv=None):
 
 
 def make_agent(config):
-  use_bisim = config.get('use_bisim_agent', False)
+  use_bisim = config.agent.use_bisim_agent
   if use_bisim:
     from .bisim_agent import BisimAgent as Agent
   else:
