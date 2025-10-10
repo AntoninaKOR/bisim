@@ -210,6 +210,7 @@ debug_bisim:
   run: {envs: 4, report_every: 10, log_every: 5, save_every: 15, train_ratio: 8, debug: True}
   replay.size: 1e4
   agent:
+    use_bisim_agent: True
     .*\.bins: 5
     .*\.layers: 1
     .*\.units: 8
@@ -228,7 +229,6 @@ debug:
   run: {envs: 4, report_every: 10, log_every: 5, save_every: 15, train_ratio: 8, debug: True}
   replay.size: 1e4
   agent:
-    use_bisim_agent: True
     .*\.bins: 5
     .*\.layers: 1
     .*\.units: 8
