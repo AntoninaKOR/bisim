@@ -22,7 +22,7 @@ RUN pip install -U pip setuptools
 
 # Envs (finger/spin, cheetah/run и walker/walk )
 RUN pip install dm_control
-RUN pip install git+git://github.com/denisyarats/dmc2gym.git
+RUN pip install git+https://github.com/denisyarats/dmc2gym.git
 
 
 # Requirements
