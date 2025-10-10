@@ -1,10 +1,10 @@
 from gym import core, spaces
 import glob
 import os
-import local_dm_control_suite as suite
+from dm_control import suite
 from dm_env import specs
 import numpy as np
-import skimage.io
+
 
 from dmc2gym import natural_imgsource
 
@@ -16,7 +16,7 @@ import random
 def _spec_to_box(spec):
     def extract_min_max(s):
         assert s.dtype == np.float64 or s.dtype == np.float32
-        dim = np.int(np.prod(s.shape))
+        dim = int(np.prod(s.shape))
         if type(s) == specs.Array:
             bound = np.inf * np.ones(dim, dtype=np.float32)
             return -bound, bound
@@ -43,64 +43,15 @@ def _flatten_obs(obs):
     return np.concatenate(obs_pieces, axis=0)
 
 
-class RandomCircleSource:
-    """
-    Simple background image source that returns an RGB image with random colored circles.
-    Each call to get_image() produces a new image (randomized). Use seed() to control RNG.
-
-    Parameters
-    ----------
-    shape2d : (height, width)
-    num_circles : int
-    colors : list of (R,G,B) tuples
-    min_r_frac, max_r_frac : fraction of min(width,height) for radius range
-    seed : optional seed
-    """
-
-    def __init__(self, shape2d, num_circles=5, colors=None, min_r_frac=0.05, max_r_frac=0.2, seed=None):
-        # shape2d is (height, width)
-        self.shape = tuple(shape2d)
-        self.h, self.w = self.shape
-        self.num_circles = num_circles
-        self.min_r_frac = min_r_frac
-        self.max_r_frac = max_r_frac
-        if colors is None:
-            self.colors = [
-                (230, 57, 70),   # red
-                (69, 123, 157),  # blue
-                (29, 105, 20),   # green
-                (255, 183, 3),   # yellow
-                (123, 31, 162),  # purple
-            ]
-        else:
-            self.colors = colors
-        self._rng = random.Random(seed)
-
-    def seed(self, seed):
-        self._rng = random.Random(seed)
-
-    def get_image(self):
-        # Create white background RGB image
-        img = Image.new('RGB', (self.w, self.h), (255, 255, 255))
-        draw = ImageDraw.Draw(img)
-        for i in range(self.num_circles):
-            r = int(self._rng.uniform(self.min_r_frac, self.max_r_frac) * min(self.h, self.w))
-            cx = int(self._rng.uniform(0, self.w))
-            cy = int(self._rng.uniform(0, self.h))
-            color = self.colors[self._rng.randint(0, len(self.colors) - 1)]
-            bbox = [cx - r, cy - r, cx + r, cy + r]
-            draw.ellipse(bbox, fill=color)
-        return np.asarray(img, dtype=np.uint8)
-
 
 class DMCWrapper(core.Env):
     def __init__(
         self,
         domain_name,
         task_name,
-        resource_files,
-        img_source,
-        total_frames,
+        resource_files=None,
+        img_source=None,
+        total_frames=1000,
         task_kwargs=None,
         visualize_reward={},
         from_pixels=False,
@@ -160,11 +111,6 @@ class DMCWrapper(core.Env):
                 self._bg_source = natural_imgsource.RandomColorSource(shape2d)
             elif img_source == "noise":
                 self._bg_source = natural_imgsource.NoiseSource(shape2d)
-            elif img_source == "circles":
-                # new simple circle-based background generator
-                # uses default parameters; you can customize inside this wrapper or
-                # extend to accept parameters via DMCWrapper args
-                self._bg_source = RandomCircleSource(shape2d)
             else:
                 files = glob.glob(os.path.expanduser(resource_files))
                 assert len(files), "Pattern {} does not match any files".format(
