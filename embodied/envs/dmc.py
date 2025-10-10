@@ -7,9 +7,10 @@ import numpy as np
 from dm_control import manipulation
 from dm_control import suite
 from dm_control.locomotion.examples import basic_rodent_2020
-
+import dmc2gym
 from . import from_dm
-
+from dm_control import suite
+from gym import core
 
 class DMC(embodied.Env):
 
@@ -37,9 +38,7 @@ class DMC(embodied.Env):
         # camera 5: eyes
         env = getattr(basic_rodent_2020, task)()
       else:
-        env = suite.load(domain, task)
-        if (circle_on_back):
-          env=embodied.wrappers.CircleOnBackWrapper(env)
+        env = suite.load(domain_name=domain, task_name=task)
     self._dmenv = env
     self._env = from_dm.FromDM(self._dmenv)
     self._env = embodied.wrappers.ActionRepeat(self._env, repeat)
