@@ -3,7 +3,7 @@ import functools
 import elements
 import embodied
 import numpy as np
-
+from gym import core
 
 class FromDM(embodied.Env):
 
@@ -56,26 +56,23 @@ class FromDM(embodied.Env):
     else:
       action = action if self._act_dict else action[self._act_key]
       time_step = self._env.step(action)
-    self._done = time_step.last()
-    return self._obs(time_step)
+    
+    #КОСТЫЛЬ
 
+    self._done = time_step.last()
+    #elif isinstance(time_step, (list, tuple, np.ndarray)):
+      # Handle gym-style tuple: (obs, reward, done, info)
+      #self._done = time_step[2] if len(time_step) > 2 else False
+
+
+    return self._obs(time_step)
+  #костыль
   def _obs(self, time_step):
     if not time_step.first():
-      assert time_step.discount in (0, 1), time_step.discount
+        self._reward = time_step.reward or 0.0
     obs = time_step.observation
-    obs = dict(obs) if self._obs_dict else {self._obs_key: obs}
-    if 'reward' in obs:
-      obs['obs_reward'] = obs.pop('reward')
-    for key in self._obs_empty:
-      del obs[key]
-    obs = {k.replace('/', '_'): v for k, v in obs.items()}
-    return dict(
-        reward=np.float32(0.0 if time_step.first() else time_step.reward),
-        is_first=time_step.first(),
-        is_last=time_step.last(),
-        is_terminal=False if time_step.first() else time_step.discount == 0,
-        **obs,
-    )
+
+    return obs
 
   def _convert(self, space):
     if hasattr(space, 'num_values'):
