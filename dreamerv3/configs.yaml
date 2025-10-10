@@ -204,46 +204,12 @@ dmc_vision:
     .*\.depth: 2
 
 dmc_finger:
-  batch_size: 8
-  batch_length: 10
-  report_length: 5
-  jax: {platform: cpu, debug: True, prealloc: False}
-  run: {envs: 4, report_every: 10, log_every: 5, save_every: 15, train_ratio: 8, debug: True}
-  replay.size: 1e4
-  agent:
-    .*\.bins: 5
-    .*\.layers: 1
-    .*\.units: 8
-    .*\.stoch: 2
-    .*\.classes: 4
-    .*\.deter: 8
-    .*\.hidden: 3
-    .*\.blocks: 4
-    .*\.depth: 2
-  img_source: circles
-  task: spin
+  task: dmc_finger_spin
   run: {steps: 1.1e4, train_ratio: 256}
 
 dmc_cheetah:
-  batch_size: 8
-  batch_length: 10
-  report_length: 5
-  jax: {platform: cpu, debug: True, prealloc: False}
-  run: {envs: 4, report_every: 10, log_every: 5, save_every: 15, train_ratio: 8, debug: True}
-  replay.size: 1e4
-  agent:
-    .*\.bins: 5
-    .*\.layers: 1
-    .*\.units: 8
-    .*\.stoch: 2
-    .*\.classes: 4
-    .*\.deter: 8
-    .*\.hidden: 3
-    .*\.blocks: 4
-    .*\.depth: 2
-  img_source: circles
-  task: run
-  run:{steps: 1.1e4, train_ratio: 256}
+  task: dmc_cheetah_run
+  run: {steps: 1.1e4, train_ratio: 256}
 
 bsuite:
   task: bsuite_mnist/0
