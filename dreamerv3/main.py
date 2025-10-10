@@ -14,13 +14,9 @@ import embodied
 import numpy as np
 import portal
 import ruamel.yaml as yaml
-import dmc2gym
-
-#from video import VideoRecorder
 
 
 def main(argv=None):
-  from .agent import Agent
 
 
   configs = elements.Path(folder / 'configs.yaml').read()
@@ -32,13 +28,6 @@ def main(argv=None):
   config = elements.Flags(config).parse(other)
   config = config.update(logdir=(
       config.logdir.format(timestamp=elements.timestamp())))
-  use_bisim = config.agent.use_bisim_agent
-  
-  if use_bisim:
-    from .bisim_agent import BisimAgent as Agent
-  else:
-    from .agent import Agent
-  [elements.print(line) for line in Agent.banner]
 
   if 'JOB_COMPLETION_INDEX' in os.environ:
     config = config.update(replica=int(os.environ['JOB_COMPLETION_INDEX']))
@@ -50,6 +39,16 @@ def main(argv=None):
   if not config.script.endswith(('_env', '_replay')):
     logdir.mkdir()
     config.save(logdir / 'config.yaml')
+
+  
+  use_bisim = temp_config.agent.use_bisim_agent
+  
+  if use_bisim:
+    from .bisim_agent import BisimAgent as Agent
+  else:
+    from .agent import Agent
+  
+  [elements.print(line) for line in Agent.banner]
 
   def init():
     elements.timer.global_timer.enabled = config.logger.timer
@@ -136,10 +135,12 @@ def main(argv=None):
 
 def make_agent(config):
   use_bisim = config.agent.use_bisim_agent
+  
   if use_bisim:
     from .bisim_agent import BisimAgent as Agent
   else:
     from .agent import Agent
+  
   env = make_env(config, 0)
   notlog = lambda k: not k.startswith('log/')
   obs_space = {k: v for k, v in env.obs_space.items() if notlog(k)}
@@ -229,7 +230,6 @@ def make_env(config, index, **overrides):
     from embodied.envs import from_gym
     import memory_maze  # noqa
   ctor = {
-
       'dummy': 'embodied.envs.dummy:Dummy',
       'gym': 'embodied.envs.from_gym:FromGym',
       'dm': 'embodied.envs.from_dmenv:FromDM',
