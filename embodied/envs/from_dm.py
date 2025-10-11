@@ -69,11 +69,21 @@ class FromDM(embodied.Env):
   #костыль
   def _obs(self, time_step):
     if not time_step.first():
-        self._reward = time_step.reward or 0.0
+      assert time_step.discount in (0, 1), time_step.discount
     obs = time_step.observation
-
-    return obs
-
+    obs = dict(obs) if self._obs_dict else {self._obs_key: obs}
+    if 'reward' in obs:
+      obs['obs_reward'] = obs.pop('reward')
+    for key in self._obs_empty:
+      del obs[key]
+    obs = {k.replace('/', '_'): v for k, v in obs.items()}
+    return dict(
+        reward=np.float32(0.0 if time_step.first() else time_step.reward),
+        is_first=time_step.first(),
+        is_last=time_step.last(),
+        is_terminal=False if time_step.first() else time_step.discount == 0,
+        **obs,
+    )
   def _convert(self, space):
     if hasattr(space, 'num_values'):
       return elements.Space(space.dtype, (), 0, space.num_values)
