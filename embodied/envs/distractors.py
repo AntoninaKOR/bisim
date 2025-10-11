@@ -157,7 +157,7 @@ class NBodySource(BaseSource):
 # Factory
 # -------------------------
 
-def make_bg_source(img_source, resource_files, height, width, grayscale=False, total_frames=10000):
+def make_bg_source(img_source, height, width, grayscale=False, total_frames=10000):
     """
     Create a background source.
 
@@ -169,7 +169,7 @@ def make_bg_source(img_source, resource_files, height, width, grayscale=False, t
     shape = (height, width)
     if img_source == 'n_body':
         # Try to use facebookresearch's Planets if available; otherwise use local NBodySource
-        params = _parse_params_string(resource_files or "")
+        params = _parse_params_string("")
         num_bodies = params.get('n', params.get('num_bodies', 8))
         dt = params.get('dt', 0.01)
         grav = params.get('grav', 1.0)
