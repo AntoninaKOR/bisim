@@ -10,7 +10,8 @@ import dmc2gym
 from . import from_dm
 from dm_control import suite
 from gym import core
-import distractors
+from embodied.envs import distractors
+
 class DMC(embodied.Env):
 
   DEFAULT_CAMERAS = dict(

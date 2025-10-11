@@ -5,7 +5,6 @@ defaults:
   replicas: 1
   method: name
   task: dummy_disc
-  img_source: None
   seed: 0
   script: train
   batch_size: 16
