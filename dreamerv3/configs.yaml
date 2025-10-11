@@ -19,6 +19,7 @@ defaults:
   clock_port: ''
   ipv6: False
   errfile: False
+  img_source: n_body
 
   logger:
     outputs: [jsonl, scope]
