@@ -185,7 +185,7 @@ dmc_proprio:
 
 dmc_vision:
   task: dmc_walker_walk
-  env.dmc.proprio: False
+  env.dmc.proprio: True
   batch_size: 8
   batch_length: 10
   report_length: 5

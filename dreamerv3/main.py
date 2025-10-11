@@ -41,7 +41,7 @@ def main(argv=None):
     config.save(logdir / 'config.yaml')
 
   
-  use_bisim = temp_config.agent.use_bisim_agent
+  use_bisim = config.agent.use_bisim_agent
   
   if use_bisim:
     from .bisim_agent import BisimAgent as Agent
