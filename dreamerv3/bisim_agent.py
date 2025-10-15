@@ -162,106 +162,159 @@ class BisimAgent(embodied.jax.Agent):
     return carry, outs, metrics
   
 
+  def   update_encoder_bisim(self, repfeat, act, rew, training=True):
+    """
+    Encoder bisimulation loss adapted to match deep_bisim4control's update_encoder:
+    - Uses the learned dynamics self.dyn to produce one-step predicted next features
+      deterministically (via the RSSM core + prior logits -> expected stoch).
+    - Flattens (batch, time) into a single axis, forms a random permutation over
+      that flattened axis, and computes smooth-L1 distances per-dimension.
+    - Builds bisimulation target r_dist + gamma * transition_dist and trains the
+      encoder so that representation distances match that target.
+    - Returns a per-timestep loss array shaped (B, T) with a zero column appended
+      for the final timestep (to fit the rest of the loss aggregation which
+      expects (B, T) shapes).
+    Notes:
+      - Gradients are allowed to flow into self.dyn and self.rew from this loss
+        (so the bisim metric can be used to update models), as requested.
+      - repfeat is expected to be the "current" features (typically passed as
+        repfeat[:, :-1] by the caller). If the final timestep was kept, the
+        function will still pad an extra zero column.
+    """
+    # Smooth L1 (Huber-like) matching PyTorch F.smooth_l1_loss default beta=1.0
+    def smooth_l1(a, b, beta=1.0):
+      d = a - b
+      ad = jnp.abs(d)
+      return jnp.where(ad < beta, 0.5 * d * d / beta, ad - 0.5 * beta)
 
-  def update_encoder_bisim(self, repfeat, act, rew, training=True):
-    """
-    Update encoder using bisimulation-based loss (converted from PyTorch version).
-    Args:
-        repfeat: latent features [B, T, ...]
-        act: actions [B, T, ...]
-        rew: rewards [B, T]
-        training: whether in training mode
-    Returns:
-        loss: encoder bisimulation loss
-    """
-    B, T = rew.shape
-    
-    # Sample random permutation across batch
-    perm = jax.random.permutation(nj.seed(), B)
-    
-    # Get current and permuted features
-    h = self.feat2tensor(repfeat)  # Convert to tensor representation
-    h2 = h[perm]
-    
-    # Predict next latent states using current dynamics model
-    # Using the existing dynamics model to predict transitions
-    feat_flat = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:]), repfeat)
-    act_flat = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:]), act)
-    
-    # Get transition predictions using existing dynamics model
-    # Since imagine_step might not exist, we'll use the dynamics model differently
-    # For now, we'll create a simple transition prediction using the reward head
-    # In a full implementation, this would need a proper transition model
-    pred_next_h = self.rew(h.reshape(-1, h.shape[-1]), 2).pred()
-    pred_next_h = pred_next_h.reshape(B, T, -1)
-    pred_next_h = pred_next_h.reshape(B, T, -1)
-    
-    # Get permuted versions
-    pred_next_h2 = pred_next_h[perm]
-    rew2 = rew[perm]
-    
-    # Compute distances using smooth L1 loss (converted to JAX)
-    z_dist = jnp.abs(h - h2)  # Use L1 distance instead of smooth_l1
-    r_dist = jnp.abs(rew - rew2)
-    
-    # Transition distance
-    transition_dist = jnp.abs(pred_next_h - pred_next_h2)
-    
-    # Bisimilarity metric
+    # repfeat is a pytree with 'deter' [B, T, deter] and 'stoch' [B, T, stoch, classes]
+    # act is a dict of actions with leading dims [B, T, ...]
+    h = self.feat2tensor(repfeat)  # [B, T, D]
+    B, T, D = h.shape
+
+    # Nothing to do if no time dimension
+    if B == 0 or T == 0:
+      return jnp.zeros((B, T), dtype=jnp.float32)
+
+    # Flatten across batch and time to create N = B * T examples
+    flat_h = h.reshape((-1, D))               # [N, D]
+    flat_rew = rew.reshape((-1,))             # [N]
+
+    # Flatten actions for feeding into RSSM core (actions are pytrees)
+    flat_act = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), act)
+
+    # Build RSSM start carries from repfeat by flattening along batch/time
+    starts = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), repfeat)
+
+    # Build an action embedding as RSSM._core expects action already embedded by DictConcat in observe
+    act_emb = nn.DictConcat(self.act_space, 1)(flat_act)
+
+    # Use deterministic one-step prediction via RSSM core + prior logits -> expected stoch
+    # deter_next = _core(deter, stoch, action_emb); prior_logits = _prior(deter_next)
+    deter_flat = starts['deter']  # [N, deter]
+    stoch_flat = starts['stoch']  # [N, stoch, classes] or similar
+
+    # _core expects stoch shaped [..., stoch, classes]; it reshapes internally.
+    deter_next = self.dyn._core(deter_flat, stoch_flat, act_emb)  # [N, deter]
+    prior_logits = self.dyn._prior(deter_next)  # [N, stoch, classes]
+
+    # Convert prior_logits to expected stoch (probabilities) deterministically via softmax
+    expected_stoch = jax.nn.softmax(prior_logits, axis=-1)  # [N, stoch, classes]
+
+    # Construct predicted feature pytree and convert to tensor
+    pred_feat = dict(deter=deter_next, stoch=expected_stoch, logit=prior_logits)
+    pred_h = self.feat2tensor(pred_feat).reshape((-1, D))  # [N, D]
+
+    # Random permutation across flattened examples to form pairs
+    N = flat_h.shape[0]
+    perm = jax.random.permutation(nj.seed(), N)
+    flat_h2 = flat_h[perm]
+    pred_h2 = pred_h[perm]
+    flat_rew2 = flat_rew[perm]
+
+    # Elementwise (per-dim) smooth_l1 distances
+    z_dist = smooth_l1(flat_h, flat_h2)                 # [N, D]
+    transition_dist = smooth_l1(pred_h, pred_h2)        # [N, D]
+    r_dist = smooth_l1(flat_rew[:, None], flat_rew2[:, None])  # [N, 1]
+
     discount = getattr(self.config, 'bisim_discount', 0.99)
-    bisimilarity = r_dist + discount * jnp.mean(transition_dist, axis=-1)
-    
-    # Loss computation
-    loss = jnp.mean((jnp.mean(z_dist, axis=-1) - bisimilarity) ** 2)
-    return loss
+    # Broadcast reward across representation dims and build bisim target
+    bisim_target = r_dist + discount * transition_dist  # [N, D]
+
+    # Per-dim squared error and mean across dims -> scalar per flattened sample
+    per_dim_err = (z_dist - bisim_target) ** 2          # [N, D]
+    per_sample_err = jnp.mean(per_dim_err, axis=-1)     # [N]
+
+    # Reshape back to (B, T) and pad a zero final column if needed by the caller
+    # Here repfeat was typically repfeat_now (i.e. original T was sequence length - 1),
+    # but to be safe we pad a zero column so returned shape always matches original (B, T)
+    # Determine B_orig and T_orig from rew shape passed by caller:
+    B_orig = rew.shape[0]
+    T_orig = rew.shape[1]
+    # per_sample_err has N = B_orig * T_orig
+    loss_per_timestep = per_sample_err.reshape((B_orig, T_orig))
+    # If the caller passed truncated sequence (e.g., repfeat_now with T-1), we still return (B, T)
+    # so no further padding here; the caller slices appropriately before passing.
+    return loss_per_timestep
+
 
   def update_transition_reward_model_loss(self, repfeat, act, next_repfeat, rew, training=True):
     """
-    Compute transition and reward model losses (adapted from PyTorch version).
-    Args:
-        repfeat: current latent features [B, T, ...]
-        act: actions [B, T, ...]
-        next_repfeat: next latent features [B, T, ...]
-        rew: rewards [B, T]
-        training: whether in training mode
-    Returns:
-        loss: combined transition and reward loss
+    Transition + reward model loss that uses:
+      - deterministic RSSM one-step prediction (core + prior -> expected stoch)
+      - MSE/NLL-style transition loss between predicted features and next posterior features
+      - Reward prediction loss from predicted features using self.rew
+    Returns per-timestep loss shaped (B, T) with last timestep typically zero (if repfeat excludes final).
+    Gradients flow into self.dyn and self.rew so both can be trained using this loss.
     """
-    # Convert features to tensor representation
-    h = self.feat2tensor(repfeat)
-    next_h = self.feat2tensor(next_repfeat)
-    
-    # For this implementation, we use the existing reward head and dynamics model
-    # Predict rewards from current features
-    pred_rew = self.rew(h, 2).pred()
-    reward_loss = jnp.mean((pred_rew.squeeze(-1) - rew) ** 2)
-    
-    # Transition loss using dynamics model predictions
-    # Simple transition loss using feature similarity
-    # In a full implementation, this would use a dedicated transition model
-    B, T = rew.shape
-    
-    # Compute simple transition consistency loss
-    # This measures how well we can predict the transition in feature space
-    h_current = self.feat2tensor(repfeat)
-    h_next = self.feat2tensor(next_repfeat)
-    
-    # Simple prediction: assume features change linearly with reward prediction
-    reward_change = self.rew(h_current.reshape(-1, h_current.shape[-1]), 2).pred()
-    reward_change = reward_change.reshape(B, T, 1)
-    
-    # Use reward prediction as a proxy for feature transition prediction
-    pred_feature_change = reward_change * 0.1  # Scale factor for stability
-    
-    # Actual feature change
-    actual_change = h_next - h_current
-    
-    # Transition loss as MSE between predicted and actual change
-    transition_loss = jnp.mean((pred_feature_change - jnp.mean(actual_change, axis=-1, keepdims=True)) ** 2)
-    
-    total_loss = transition_loss + reward_loss
-    return total_loss
+    # repfeat: pytree current features [B, T, ...]
+    # next_repfeat: pytree next features [B, T, ...] (usually aligned so both lengths equal and next_repfeat corresponds to t+1)
+    h = self.feat2tensor(repfeat)  # [B, T, D]
+    h_next = self.feat2tensor(next_repfeat)  # [B, T, D]
+    B, T, D = h.shape
 
+    if B == 0 or T == 0:
+      return jnp.zeros((B, T), dtype=jnp.float32)
+
+    # Flatten across batch/time
+    flat_h = h.reshape((-1, D))         # [N, D]
+    flat_h_next = h_next.reshape((-1, D))  # [N, D]
+    flat_rew = rew.reshape((-1,))       # [N]
+
+    # Flatten actions
+    flat_act = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), act)
+
+    # Build action embedding as RSSM.observe would do
+    act_emb = nn.DictConcat(self.act_space, 1)(flat_act)
+
+    # Build starts from repfeat flattened
+    starts = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), repfeat)
+    deter_flat = starts['deter']
+    stoch_flat = starts['stoch']
+
+    # Predict next deter via RSSM core and prior logits => expected stoch
+    deter_next = self.dyn._core(deter_flat, stoch_flat, act_emb)  # [N, deter]
+    prior_logits = self.dyn._prior(deter_next)                    # [N, stoch, classes]
+    expected_stoch = jax.nn.softmax(prior_logits, axis=-1)        # [N, stoch, classes]
+
+    pred_feat = dict(deter=deter_next, stoch=expected_stoch, logit=prior_logits)
+    pred_h = self.feat2tensor(pred_feat).reshape((-1, D))         # [N, D]
+
+    # Transition loss: use MSE between predicted embedding and next posterior embedding
+    trans_per_dim = (pred_h - flat_h_next) ** 2                   # [N, D]
+    trans_loss_per_sample = jnp.mean(trans_per_dim, axis=-1)     # [N]
+
+    # Reward loss: predict reward from predicted embedding (same API as used elsewhere)
+    pred_rew = self.rew(pred_h, 2).pred().reshape((-1,))         # [N]
+    reward_loss_per_sample = (pred_rew - flat_rew) ** 2          # [N]
+
+    # Combine per-sample losses
+    per_sample_loss = trans_loss_per_sample + reward_loss_per_sample  # [N]
+
+    # Reshape to (B, T)
+    loss_per_timestep = per_sample_loss.reshape((B, T))
+
+    return loss_per_timestep
  
   def loss(self, carry, obs, prevact, training=True):
     enc_carry, dyn_carry = carry
@@ -334,7 +387,7 @@ class BisimAgent(embodied.jax.Agent):
     act_now = {k: v[:, :-1] for k, v in prevact.items()}
     rew_now = obs['reward'][:, :-1]
     
-    # Enhanced encoder bisim loss 
+    # Encoder bisim loss (returns shape (B, T-1) or (B, T) depending on input); we expect (B, T-1)
     encoder_bisim_loss = self.update_encoder_bisim(repfeat_now, act_now, rew_now, training)
     
     # Transition and reward model loss 
@@ -342,8 +395,21 @@ class BisimAgent(embodied.jax.Agent):
         repfeat_now, act_now, repfeat_next, rew_now, training)
     
     # Combine bisimilarity-related losses 
+    # both are (B, T) or (B, T-1) shaped consistent with loss aggregation; ensure they are (B, T)
+    # If they are (B, T-1), pad to (B, T)
+    def pad_to_T(x):
+      if x.shape[1] == T:
+        return x
+      else:
+        pad = jnp.zeros((x.shape[0], 1), dtype=x.dtype)
+        return jnp.concatenate([x, pad], axis=1)
+
+    encoder_bisim_loss = pad_to_T(encoder_bisim_loss)
+    transition_reward_loss = pad_to_T(transition_reward_loss)
+
     total_bisim_loss = bisim_coef * encoder_bisim_loss + transition_coef * transition_reward_loss
     losses['bisim'] = total_bisim_loss
+
 
     # Replay
     if self.config.repval_loss:
