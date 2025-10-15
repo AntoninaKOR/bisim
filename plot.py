@@ -392,29 +392,3 @@ def main(args):
   plot_runs(df, stats, args)
 
 
-if __name__ == '__main__':
-  main(elements.Flags(
-      pattern='**/scores.jsonl',
-      indirs=[''],
-      outdir='',
-      methods='.*',
-      tasks='.*',
-      newstyle=True,
-      indir_prefix=False,
-      workers=16,
-      xkeys=['xs', 'step'],
-      ykeys=['ys', 'episode/score'],
-      ythres=0.0,
-      xlim=0,
-      ylim=0,
-      binsize=0,
-      bins=30,
-      cols=0,
-      legendcols=0,
-      size=[3, 3],
-      xticks=4,
-      yticks=10,
-      stats=['runs', 'auto'],
-      agg=True,
-      todf='',
-  ).parse())
