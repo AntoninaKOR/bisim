@@ -84,7 +84,7 @@ class BisimAgent(embodied.jax.Agent):
         name='opt')
 
     scales = self.config.loss_scales.copy()
-    # rec = scales.pop('rec')
+    rec = scales.pop('rec')
     # scales.update({k: rec for k in dec_space})
     
     # Ensure bisim loss is in scales
@@ -301,11 +301,12 @@ class BisimAgent(embodied.jax.Agent):
     pred_h = self.feat2tensor(pred_feat).reshape((-1, D))         # [N, D]
 
     # Transition loss: use MSE between predicted embedding and next posterior embedding
-    trans_per_dim = (pred_h - flat_h_next) ** 2                   # [N, D]
+    trans_per_dim = (pred_h - flat_h_next) ** 2                  # [N, D]
     trans_loss_per_sample = jnp.mean(trans_per_dim, axis=-1)     # [N]
 
     # Reward loss: predict reward from predicted embedding (same API as used elsewhere)
-    pred_rew = self.rew(pred_h, 2).pred().reshape((-1,))         # [N]
+    #print(self.feat2tensor(pred_feat).shape, self.feat2tensor(repfeat).shape,)
+    pred_rew = self.rew(self.feat2tensor(pred_feat).reshape((-1, T, D)), 2).pred().reshape((-1,))         # [N]
     reward_loss_per_sample = (pred_rew - flat_rew) ** 2          # [N]
 
     # Combine per-sample losses
@@ -409,7 +410,7 @@ class BisimAgent(embodied.jax.Agent):
 
     total_bisim_loss = bisim_coef * encoder_bisim_loss + transition_coef * transition_reward_loss
     losses['bisim'] = total_bisim_loss
-
+    
 
     # Replay
     if self.config.repval_loss:
@@ -484,12 +485,17 @@ class BisimAgent(embodied.jax.Agent):
     feat_tensor = jnp.concatenate([obs_tensor, img_tensor], axis=1)  # [RB, T, feat_dim]
     
     feat_dim = feat_tensor.shape[-1]
-    height = int(jnp.sqrt(feat_dim))
+    height = int(feat_dim**0.5)#jnp.sqrt(feat_dim).astype(int)
     width = feat_dim // height
     
     # Truncate to make perfect rectangle
     used_dims = height * width
-    feat_reshaped = feat_tensor[:, :, :used_dims].reshape(RB, T, height, width, 1)
+    features = feat_tensor.shape[-1]  # static or ShapedArray: used to build mask length
+    # build a boolean mask shape (1,1,features) where first used_dims are True
+    mask = (jnp.arange(features)[None, None, :] < used_dims).astype(feat_tensor.dtype)
+    # zero out the trailing dims and then reshape
+    feat_masked = feat_tensor * mask
+    feat_reshaped = feat_masked.reshape(RB, T, height, width, 1)
     
     # Normalize to [0, 255] for visualization
     feat_min = feat_reshaped.min(axis=(2, 3), keepdims=True)
