@@ -189,7 +189,6 @@ dmc_vision:
   batch_size: 8
   batch_length: 10
   report_length: 5
-  jax: {platform: cpu, debug: True, prealloc: False}
   run: {envs: 4, report_every: 10, log_every: 5, save_every: 15, train_ratio: 8, debug: True}
   replay.size: 1e4
 
