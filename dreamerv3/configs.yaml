@@ -47,7 +47,7 @@ defaults:
     chunksize: 1024
 
   run:
-    steps:  1e4
+    steps:  1e6
     duration: 0
     train_ratio: 32.0
     log_every: 120
@@ -192,20 +192,11 @@ dmc_vision:
   jax: {platform: cpu, debug: True, prealloc: False}
   run: {envs: 4, report_every: 10, log_every: 5, save_every: 15, train_ratio: 8, debug: True}
   replay.size: 1e4
-  agent:
-    .*\.bins: 5
-    .*\.layers: 1
-    .*\.units: 8
-    .*\.stoch: 2
-    .*\.classes: 4
-    .*\.deter: 8
-    .*\.hidden: 3
-    .*\.blocks: 4
-    .*\.depth: 2
+
 
 dmc_finger:
   task: dmc_finger_spin
-  run: {steps: 1.1e4, train_ratio: 256}
+  run: {steps: 1.1e6, train_ratio: 256}
 
 dmc_cheetah:
   task: dmc_cheetah_run

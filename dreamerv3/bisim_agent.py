@@ -78,18 +78,22 @@ class BisimAgent(embodied.jax.Agent):
     self.advnorm = embodied.jax.Normalize(**config.advnorm, name='advnorm')
 
     self.modules = [
-        self.dyn, self.enc, self.rew, self.con, self.pol, self.val]
+        self.dyn, self.rew, self.con, self.pol, self.val]
     self.opt = embodied.jax.Optimizer(
         self.modules, self._make_opt(**config.opt), summary_depth=1,
         name='opt')
+    #optimizer enc
+    self.enc_opt = embodied.jax.Optimizer(
+        [self.enc], self._make_opt(**config.opt), summary_depth=1,
+        name='enc_opt')
 
     scales = self.config.loss_scales.copy()
     rec = scales.pop('rec')
     # scales.update({k: rec for k in dec_space})
     
     # Ensure bisim loss is in scales
-    if 'bisim' not in scales:
-      scales['bisim'] = getattr(config, 'bisim_scale', 1.0)
+    # if 'bisim' not in scales:
+    #   scales['bisim'] = getattr(config, 'bisim_scale', 1.0)
     
     self.scales = scales
 
@@ -144,9 +148,18 @@ class BisimAgent(embodied.jax.Agent):
 
   def train(self, carry, data):
     carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
+    metrics_enc, aux = self.enc_opt(self.bisim_loss_only, carry, obs, prevact, training=True, has_aux=True)
+    # metrics_enc contains 'enc_opt/...' prefixed metrics from Optimizer
+    # aux contains (carry, metrics) from bisim_loss_only; extract the metrics if you need them
+    _, bisim_metrics = aux
+
     metrics, (carry, entries, outs, mets) = self.opt(
         self.loss, carry, obs, prevact, training=True, has_aux=True)
     metrics.update(mets)
+  
+    # log or merge metrics
+    if 'bisim_loss' in bisim_metrics:
+      metrics['loss/bisim'] = bisim_metrics['bisim_loss'].mean()
     self.slowval.update()
     outs = {}
     if self.config.replay_context:
@@ -160,7 +173,61 @@ class BisimAgent(embodied.jax.Agent):
     #   outs['replay']['priority'] = losses['model']
     carry = (*carry, {k: data[k][:, -1] for k in self.act_space})
     return carry, outs, metrics
-  
+
+
+  def bisim_loss_only(self, carry, obs, prevact, training=True):
+    """
+    Compute only the bisimulation loss and return (loss, aux).
+    aux can be whatever you want returned (e.g., metrics).
+    This function should mirror how repfeat is produced in full loss,
+    but return only the bisim term (as a scalar).
+    """
+    enc_carry, dyn_carry = carry
+    reset = obs['is_first']
+    B, T = reset.shape
+
+    # Produce encoder and dynamics outputs similarly to full loss:
+    enc_carry, enc_entries, tokens = self.enc(enc_carry, obs, reset, training)
+    # dyn.observe yields repfeat used for bisim
+    dyn_carry, dyn_entries, los, repfeat, mets = self.dyn.loss(
+        dyn_carry, tokens, prevact, reset, training)
+
+    # Convert repfeat to tensor (same helper used elsewhere)
+    h = self.feat2tensor(repfeat)   # shape [B, T, D]
+
+    # Build permuted targets and detach them so targets are fixed
+    perm = jax.random.permutation(nj.seed(), B)
+    h2 = sg(h)[perm]                 # detached permuted representation
+    # If you use predicted next features as part of bisim target, detach those too.
+    # Example (if using dynamics or reward head as proxy): pred_next_h = ...
+    # pred_next_h2 = sg(pred_next_h)[perm]
+
+    # reward targets and detach if needed
+    rew = obs['reward']
+    rew2 = sg(rew)[perm]
+
+    # Example distances (use the same math as your bisim loss):
+    z_dist = jnp.abs(h - h2)   # per-dimension distance
+    r_dist = jnp.abs(rew - rew2)   # reward distance (detached)
+    # If using predicted transitions, compute transition_dist and detach permuted target
+    # transition_dist = jnp.abs(pred_next_h - pred_next_h2)
+
+    # Combine into bisim target and detach target
+    discount = getattr(self.config, 'bisim_discount', 0.99)
+    # If transition_dist exists, include it; else only reward
+    # bisimilarity = r_dist + discount * jnp.mean(transition_dist, axis=-1)
+    bisimilarity = r_dist  # simple fallback; adapt to your equation
+    bisimilarity = sg(bisimilarity)
+
+    # Compare representation distance (reduce along feature dim, mean over time/batch):
+    rep_dist = jnp.mean(z_dist, axis=-1)  # [B, T]
+    loss = jnp.mean((rep_dist - bisimilarity) ** 2)  # scalar
+
+    # You may want to return some metrics too:
+    metrics = {'bisim_loss': loss, 'bisim_rep_rms': jnp.mean(z_dist)}
+
+    # aux should match Optimizer expected aux shape if using has_aux=True
+    return loss, (carry, metrics)
 
   def   update_encoder_bisim(self, repfeat, act, rew, training=True):
     """
@@ -224,6 +291,20 @@ class BisimAgent(embodied.jax.Agent):
     # Construct predicted feature pytree and convert to tensor
     pred_feat = dict(deter=deter_next, stoch=expected_stoch, logit=prior_logits)
     pred_h = self.feat2tensor(pred_feat).reshape((-1, D))  # [N, D]
+
+    #normalizatiom
+    h_mean = jnp.mean(flat_h, axis=0, keepdims=True)
+    h_std = jnp.std(flat_h, axis=0, keepdims=True) + 1e-6
+    print(flat_rew)
+    flat_h= (flat_h - h_mean) / h_std
+
+    pred_mean = jnp.mean(pred_h , axis=0, keepdims=True)
+    pred_std = jnp.std(pred_h , axis=0, keepdims=True) + 1e-6
+    pred_h = (pred_h  - pred_mean) / pred_std
+
+    rew_mean = jnp.mean(flat_rew , axis=0, keepdims=True)
+    rew_std = jnp.std(flat_rew, axis=0, keepdims=True) + 1e-6
+    flat_rew = (flat_rew - rew_mean) / rew_std
 
     # Random permutation across flattened examples to form pairs
     N = flat_h.shape[0]
@@ -389,27 +470,27 @@ class BisimAgent(embodied.jax.Agent):
     rew_now = obs['reward'][:, :-1]
     
     # Encoder bisim loss (returns shape (B, T-1) or (B, T) depending on input); we expect (B, T-1)
-    encoder_bisim_loss = self.update_encoder_bisim(repfeat_now, act_now, rew_now, training)
+    # encoder_bisim_loss = self.update_encoder_bisim(repfeat_now, act_now, rew_now, training)
     
-    # Transition and reward model loss 
-    transition_reward_loss = self.update_transition_reward_model_loss(
-        repfeat_now, act_now, repfeat_next, rew_now, training)
+    # # Transition and reward model loss 
+    # transition_reward_loss = self.update_transition_reward_model_loss(
+    #     repfeat_now, act_now, repfeat_next, rew_now, training)
     
-    # Combine bisimilarity-related losses 
-    # both are (B, T) or (B, T-1) shaped consistent with loss aggregation; ensure they are (B, T)
-    # If they are (B, T-1), pad to (B, T)
-    def pad_to_T(x):
-      if x.shape[1] == T:
-        return x
-      else:
-        pad = jnp.zeros((x.shape[0], 1), dtype=x.dtype)
-        return jnp.concatenate([x, pad], axis=1)
+    # # Combine bisimilarity-related losses 
+    # # both are (B, T) or (B, T-1) shaped consistent with loss aggregation; ensure they are (B, T)
+    # # If they are (B, T-1), pad to (B, T)
+    # def pad_to_T(x):
+    #   if x.shape[1] == T:
+    #     return x
+    #   else:
+    #     pad = jnp.zeros((x.shape[0], 1), dtype=x.dtype)
+    #     return jnp.concatenate([x, pad], axis=1)
 
-    encoder_bisim_loss = pad_to_T(encoder_bisim_loss)
-    transition_reward_loss = pad_to_T(transition_reward_loss)
+    # encoder_bisim_loss = pad_to_T(encoder_bisim_loss)
+    # transition_reward_loss = pad_to_T(transition_reward_loss)
 
-    total_bisim_loss = bisim_coef * encoder_bisim_loss + transition_coef * transition_reward_loss
-    losses['bisim'] = total_bisim_loss
+    # total_bisim_loss = bisim_coef * encoder_bisim_loss + transition_coef * transition_reward_loss
+    # losses['bisim'] = total_bisim_loss
     
 
     # Replay
