@@ -99,7 +99,7 @@ class NBodySource(BaseSource):
         self.velocities = np.random.uniform(-0.01, 0.01, size=(self.num_bodies, 2))
         if palette is None:
             # random pastel colors
-            palette = [tuple((np.array([random.randint(64,255) for _ in range(3)]))).tolist() for _ in range(self.num_bodies)]
+            palette = [[(np.array([random.randint(64,255) for _ in range(3)]))] for _ in range(self.num_bodies)]
         self.palette = palette
 
     def _step_physics(self):
@@ -142,7 +142,7 @@ class NBodySource(BaseSource):
             x = int(np.clip(self.positions[i, 0], 0.0, 1.0) * (self.w - 1))
             y = int(np.clip(self.positions[i, 1], 0.0, 1.0) * (self.h - 1))
             r = max(1, self.body_radius)
-            color = tuple(int(c) for c in self.palette[i % len(self.palette)])
+            color = tuple(int(255 * c) for c in self.palette[i % len(self.palette)])
             # draw a filled circle (RGBA alpha to soften)
             bbox = [x - r, y - r, x + r, y + r]
             draw.ellipse(bbox, fill=color + (255,))
@@ -177,7 +177,7 @@ def make_bg_source(img_source, height, width, grayscale=False, total_frames=1000
         radius = params.get('radius', max(2, min(height, width) // 32))
         # If deep_bisim4control's Planets is available, try to wrap it.
         try:
-            from n_body_problem import Planets  # type: ignore
+            from embodied.envs.n_body_problem import Planets  # type: ignore
             # If import works, use Planets but still render with PIL for speed.
             planets = Planets(num_bodies=num_bodies, num_dimensions=2, dt=dt, contained_in_a_box=True)
             class WrappedPlanets:
@@ -186,8 +186,8 @@ def make_bg_source(img_source, height, width, grayscale=False, total_frames=1000
                     self.shape = shape
                     self.radius = radius
                     # simple palette
-                    self.palette = palette or [tuple((np.random.randint(64,255,size=3)).tolist()) for _ in range(self.planets.num_bodies)]
-                def get_image(self):
+                    self.palette =  [np.random.randint(64,255,size=3) for _ in range(self.planets.num_bodies)]
+                def get_image(self, background=None):
                     # step the simulator
                     self.planets.step()
                     pos = self.planets.body_positions  # (N,2) in [0,1]
@@ -199,9 +199,10 @@ def make_bg_source(img_source, height, width, grayscale=False, total_frames=1000
                         x = int(np.clip(pos[i,0], 0.0, 1.0)*(w-1))
                         y = int(np.clip(pos[i,1], 0.0, 1.0)*(h-1))
                         r = int(self.radius)
-                        color = tuple(int(c) for c in self.palette[i % len(self.palette)])
-                        draw.ellipse([x-r,y-r,x+r,y+r], fill=color + (255,))
+                        color = tuple(int( c) for c in self.palette[i % len(self.palette)])
+                        draw.ellipse([x-r,y-r,x+r,y+r], fill=color )
                     return np.asarray(img, dtype=np.uint8)
+    
             return WrappedPlanets(planets, shape, radius)
         except Exception:
             # fallback to local implementation

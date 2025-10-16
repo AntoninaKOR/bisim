@@ -71,7 +71,7 @@ defaults:
     debug: True
 
   jax:
-    platform: cpu
+    platform: cuda
     compute_dtype: bfloat16
     policy_devices: [0]
     train_devices: [0]
@@ -196,6 +196,8 @@ dmc_vision:
 dmc_finger:
   task: dmc_finger_spin
   run: {steps: 1.1e6, train_ratio: 256}
+  batch_size: 8
+  batch_length: 32
 
 dmc_cheetah:
   task: dmc_cheetah_run

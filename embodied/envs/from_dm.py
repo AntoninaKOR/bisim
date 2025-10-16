@@ -3,7 +3,7 @@ import functools
 import elements
 import embodied
 import numpy as np
-from gym import core
+
 
 class FromDM(embodied.Env):
 

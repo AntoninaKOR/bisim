@@ -6,10 +6,8 @@ import embodied
 import numpy as np
 from dm_control import manipulation
 from dm_control import suite
-import dmc2gym
 from . import from_dm
 from dm_control import suite
-from gym import core
 from embodied.envs import distractors
 
 class DMC(embodied.Env):
@@ -21,6 +19,7 @@ class DMC(embodied.Env):
 
   def __init__(
       self, env, repeat=1, size=(64, 64), proprio=True, image=True, img_source=None, camera=-1, total_frames=10000, bg_grayscale=True):
+
     if 'MUJOCO_GL' not in os.environ:
       os.environ['MUJOCO_GL'] = 'egl'
     if isinstance(env, str):
@@ -100,8 +99,10 @@ class DMC(embodied.Env):
       except Exception as e:
         print("Warning: bg compositing failed:", e)
 
+
     obs[key] = frame
     for key, space in self.obs_space.items():
       if np.issubdtype(space.dtype, np.floating):
         assert np.isfinite(obs[key]).all(), (key, obs[key])
+
     return obs

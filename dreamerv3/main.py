@@ -15,6 +15,11 @@ import numpy as np
 import portal
 import ruamel.yaml as yaml
 
+# import os
+# # os.environ["MUJOCO_GL"] = "osmesa"     # or "osmesa" if EGL fails
+# # os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+# # os.environ["SDL_VIDEODRIVER"] = "dummy"
+
 
 def main(argv=None):
 
@@ -42,6 +47,7 @@ def main(argv=None):
 
   
   use_bisim = config.agent.use_bisim_agent
+  img_source = config.img_source
   
   if use_bisim:
     from .bisim_agent import BisimAgent as Agent
@@ -253,6 +259,7 @@ def make_env(config, index, **overrides):
     ctor = getattr(module, cls)
   kwargs = config.env.get(suite, {})
   kwargs.update(overrides)
+  kwargs['img_source'] = config.img_source
   if kwargs.pop('use_seed', False):
     kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
   if kwargs.pop('use_logdir', False):
