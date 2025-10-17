@@ -78,22 +78,23 @@ class BisimAgent(embodied.jax.Agent):
     self.advnorm = embodied.jax.Normalize(**config.advnorm, name='advnorm')
 
     self.modules = [
-        self.dyn, self.rew, self.con, self.pol, self.val]
+        self.dyn, self.rew, self.con, self.pol, self.val,self.enc]
     self.opt = embodied.jax.Optimizer(
         self.modules, self._make_opt(**config.opt), summary_depth=1,
         name='opt')
-    #optimizer enc
-    self.enc_opt = embodied.jax.Optimizer(
-        [self.enc], self._make_opt(**config.opt), summary_depth=1,
-        name='enc_opt')
+    #optimizer enc (if we separete it)
+    # self.enc_opt = embodied.jax.Optimizer(
+    #       [self.enc], self._make_opt(**config.opt), summary_depth=1,
+    #      name='enc_opt')
 
     scales = self.config.loss_scales.copy()
     rec = scales.pop('rec')
     # scales.update({k: rec for k in dec_space})
     
     # Ensure bisim loss is in scales
-    # if 'bisim' not in scales:
-    #   scales['bisim'] = getattr(config, 'bisim_scale', 1.0)
+    if 'bisim' not in scales:
+      scales['bisim'] = getattr(config, 'bisim_scale', 1.0)
+    
     
     self.scales = scales
 
@@ -148,18 +149,18 @@ class BisimAgent(embodied.jax.Agent):
 
   def train(self, carry, data):
     carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
-    metrics_enc, aux = self.enc_opt(self.bisim_loss_only, carry, obs, prevact, training=True, has_aux=True)
+    #metrics_enc, aux = self.enc_opt(self.bisim_loss, carry, obs, prevact, training=True, has_aux=True)
     # metrics_enc contains 'enc_opt/...' prefixed metrics from Optimizer
     # aux contains (carry, metrics) from bisim_loss_only; extract the metrics if you need them
-    _, bisim_metrics = aux
+    #_, bisim_metrics = aux
 
     metrics, (carry, entries, outs, mets) = self.opt(
         self.loss, carry, obs, prevact, training=True, has_aux=True)
     metrics.update(mets)
   
     # log or merge metrics
-    if 'bisim_loss' in bisim_metrics:
-      metrics['loss/bisim'] = bisim_metrics['bisim_loss'].mean()
+    # if 'bisim_loss' in bisim_metrics:
+    #    metrics['loss/bisim'] = bisim_metrics['bisim_loss'].mean()
     self.slowval.update()
     outs = {}
     if self.config.replay_context:
@@ -175,7 +176,7 @@ class BisimAgent(embodied.jax.Agent):
     return carry, outs, metrics
 
 
-  def bisim_loss_only(self, carry, obs, prevact, training=True):
+  def bisim_loss(self, carry, obs, prevact, training=True):
     """
     Compute only the bisimulation loss and return (loss, aux).
     aux can be whatever you want returned (e.g., metrics).
@@ -189,214 +190,209 @@ class BisimAgent(embodied.jax.Agent):
     # Produce encoder and dynamics outputs similarly to full loss:
     enc_carry, enc_entries, tokens = self.enc(enc_carry, obs, reset, training)
     # dyn.observe yields repfeat used for bisim
-    dyn_carry, dyn_entries, los, repfeat, mets = self.dyn.loss(
-        dyn_carry, tokens, prevact, reset, training)
-
+    dyn_carry, dyn_entries, repfeat = self.dyn.observe(dyn_carry, sg(tokens), prevact, reset, training)
+    
+    
     # Convert repfeat to tensor (same helper used elsewhere)
-    h = self.feat2tensor(repfeat)   # shape [B, T, D]
+    h = sg(self.feat2tensor(repfeat)) # shape [B, T, D]
 
     # Build permuted targets and detach them so targets are fixed
     perm = jax.random.permutation(nj.seed(), B)
-    h2 = sg(h)[perm]                 # detached permuted representation
-    # If you use predicted next features as part of bisim target, detach those too.
-    # Example (if using dynamics or reward head as proxy): pred_next_h = ...
-    # pred_next_h2 = sg(pred_next_h)[perm]
+    h2 = sg(h[perm])                 # detached permuted representation
+
 
     # reward targets and detach if needed
     rew = obs['reward']
-    rew2 = sg(rew)[perm]
-
-    # Example distances (use the same math as your bisim loss):
-    z_dist = jnp.abs(h - h2)   # per-dimension distance
-    r_dist = jnp.abs(rew - rew2)   # reward distance (detached)
-    # If using predicted transitions, compute transition_dist and detach permuted target
-    # transition_dist = jnp.abs(pred_next_h - pred_next_h2)
+    rew2 = rew[perm]
+    
+    z_dist = jnp.abs(h- h2)   # per-dimension distance
+    r_dist = jnp.abs(rew-rew2)   # reward distance (detached)
+  
 
     # Combine into bisim target and detach target
     discount = getattr(self.config, 'bisim_discount', 0.99)
     # If transition_dist exists, include it; else only reward
     # bisimilarity = r_dist + discount * jnp.mean(transition_dist, axis=-1)
-    bisimilarity = r_dist  # simple fallback; adapt to your equation
+    #I"M SURE WHICH IMPLEMENTATION OF USEFUL
+    bisimilarity = r_dist + discount * jnp.mean(z_dist, axis=-1)
     bisimilarity = sg(bisimilarity)
-
     # Compare representation distance (reduce along feature dim, mean over time/batch):
-    rep_dist = jnp.mean(z_dist, axis=-1)  # [B, T]
-    loss = jnp.mean((rep_dist - bisimilarity) ** 2)  # scalar
+    enc_dist = jnp.mean(jnp.abs(tokens - tokens[perm]), axis=-1)  # [B, T]
+    loss = jnp.mean((bisimilarity -  enc_dist ) ** 2)  # scalar
 
-    # You may want to return some metrics too:
     metrics = {'bisim_loss': loss, 'bisim_rep_rms': jnp.mean(z_dist)}
 
     # aux should match Optimizer expected aux shape if using has_aux=True
-    return loss, (carry, metrics)
+    return loss , (carry, metrics)
 
-  def   update_encoder_bisim(self, repfeat, act, rew, training=True):
-    """
-    Encoder bisimulation loss adapted to match deep_bisim4control's update_encoder:
-    - Uses the learned dynamics self.dyn to produce one-step predicted next features
-      deterministically (via the RSSM core + prior logits -> expected stoch).
-    - Flattens (batch, time) into a single axis, forms a random permutation over
-      that flattened axis, and computes smooth-L1 distances per-dimension.
-    - Builds bisimulation target r_dist + gamma * transition_dist and trains the
-      encoder so that representation distances match that target.
-    - Returns a per-timestep loss array shaped (B, T) with a zero column appended
-      for the final timestep (to fit the rest of the loss aggregation which
-      expects (B, T) shapes).
-    Notes:
-      - Gradients are allowed to flow into self.dyn and self.rew from this loss
-        (so the bisim metric can be used to update models), as requested.
-      - repfeat is expected to be the "current" features (typically passed as
-        repfeat[:, :-1] by the caller). If the final timestep was kept, the
-        function will still pad an extra zero column.
-    """
-    # Smooth L1 (Huber-like) matching PyTorch F.smooth_l1_loss default beta=1.0
-    def smooth_l1(a, b, beta=1.0):
-      d = a - b
-      ad = jnp.abs(d)
-      return jnp.where(ad < beta, 0.5 * d * d / beta, ad - 0.5 * beta)
+  # def   update_encoder_bisim(self, repfeat, act, rew, training=True):
+  #   """
+  #   Encoder bisimulation loss adapted to match deep_bisim4control's update_encoder:
+  #   - Uses the learned dynamics self.dyn to produce one-step predicted next features
+  #     deterministically (via the RSSM core + prior logits -> expected stoch).
+  #   - Flattens (batch, time) into a single axis, forms a random permutation over
+  #     that flattened axis, and computes smooth-L1 distances per-dimension.
+  #   - Builds bisimulation target r_dist + gamma * transition_dist and trains the
+  #     encoder so that representation distances match that target.
+  #   - Returns a per-timestep loss array shaped (B, T) with a zero column appended
+  #     for the final timestep (to fit the rest of the loss aggregation which
+  #     expects (B, T) shapes).
+  #   Notes:
+  #     - Gradients are allowed to flow into self.dyn and self.rew from this loss
+  #       (so the bisim metric can be used to update models), as requested.
+  #     - repfeat is expected to be the "current" features (typically passed as
+  #       repfeat[:, :-1] by the caller). If the final timestep was kept, the
+  #       function will still pad an extra zero column.
+  #   """
+  #   # Smooth L1 (Huber-like) matching PyTorch F.smooth_l1_loss default beta=1.0
+  #   def smooth_l1(a, b, beta=1.0):
+  #     d = a - b
+  #     ad = jnp.abs(d)
+  #     return jnp.where(ad < beta, 0.5 * d * d / beta, ad - 0.5 * beta)
 
-    # repfeat is a pytree with 'deter' [B, T, deter] and 'stoch' [B, T, stoch, classes]
-    # act is a dict of actions with leading dims [B, T, ...]
-    h = self.feat2tensor(repfeat)  # [B, T, D]
-    B, T, D = h.shape
+  #   # repfeat is a pytree with 'deter' [B, T, deter] and 'stoch' [B, T, stoch, classes]
+  #   # act is a dict of actions with leading dims [B, T, ...]
+  #   h = self.feat2tensor(repfeat)  # [B, T, D]
+  #   B, T, D = h.shape
 
-    # Nothing to do if no time dimension
-    if B == 0 or T == 0:
-      return jnp.zeros((B, T), dtype=jnp.float32)
+  #   # Nothing to do if no time dimension
+  #   if B == 0 or T == 0:
+  #     return jnp.zeros((B, T), dtype=jnp.float32)
 
-    # Flatten across batch and time to create N = B * T examples
-    flat_h = h.reshape((-1, D))               # [N, D]
-    flat_rew = rew.reshape((-1,))             # [N]
+  #   # Flatten across batch and time to create N = B * T examples
+  #   flat_h = h.reshape((-1, D))               # [N, D]
+  #   flat_rew = rew.reshape((-1,))             # [N]
 
-    # Flatten actions for feeding into RSSM core (actions are pytrees)
-    flat_act = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), act)
+  #   # Flatten actions for feeding into RSSM core (actions are pytrees)
+  #   flat_act = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), act)
 
-    # Build RSSM start carries from repfeat by flattening along batch/time
-    starts = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), repfeat)
+  #   # Build RSSM start carries from repfeat by flattening along batch/time
+  #   starts = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), repfeat)
 
-    # Build an action embedding as RSSM._core expects action already embedded by DictConcat in observe
-    act_emb = nn.DictConcat(self.act_space, 1)(flat_act)
+  #   # Build an action embedding as RSSM._core expects action already embedded by DictConcat in observe
+  #   act_emb = nn.DictConcat(self.act_space, 1)(flat_act)
 
-    # Use deterministic one-step prediction via RSSM core + prior logits -> expected stoch
-    # deter_next = _core(deter, stoch, action_emb); prior_logits = _prior(deter_next)
-    deter_flat = starts['deter']  # [N, deter]
-    stoch_flat = starts['stoch']  # [N, stoch, classes] or similar
+  #   # Use deterministic one-step prediction via RSSM core + prior logits -> expected stoch
+  #   # deter_next = _core(deter, stoch, action_emb); prior_logits = _prior(deter_next)
+  #   deter_flat = starts['deter']  # [N, deter]
+  #   stoch_flat = starts['stoch']  # [N, stoch, classes] or similar
 
-    # _core expects stoch shaped [..., stoch, classes]; it reshapes internally.
-    deter_next = self.dyn._core(deter_flat, stoch_flat, act_emb)  # [N, deter]
-    prior_logits = self.dyn._prior(deter_next)  # [N, stoch, classes]
+  #   # _core expects stoch shaped [..., stoch, classes]; it reshapes internally.
+  #   deter_next = self.dyn._core(deter_flat, stoch_flat, act_emb)  # [N, deter]
+  #   prior_logits = self.dyn._prior(deter_next)  # [N, stoch, classes]
 
-    # Convert prior_logits to expected stoch (probabilities) deterministically via softmax
-    expected_stoch = jax.nn.softmax(prior_logits, axis=-1)  # [N, stoch, classes]
+  #   # Convert prior_logits to expected stoch (probabilities) deterministically via softmax
+  #   expected_stoch = jax.nn.softmax(prior_logits, axis=-1)  # [N, stoch, classes]
 
-    # Construct predicted feature pytree and convert to tensor
-    pred_feat = dict(deter=deter_next, stoch=expected_stoch, logit=prior_logits)
-    pred_h = self.feat2tensor(pred_feat).reshape((-1, D))  # [N, D]
+  #   # Construct predicted feature pytree and convert to tensor
+  #   pred_feat = dict(deter=deter_next, stoch=expected_stoch, logit=prior_logits)
+  #   pred_h = self.feat2tensor(pred_feat).reshape((-1, D))  # [N, D]
 
-    #normalizatiom
-    h_mean = jnp.mean(flat_h, axis=0, keepdims=True)
-    h_std = jnp.std(flat_h, axis=0, keepdims=True) + 1e-6
-    print(flat_rew)
-    flat_h= (flat_h - h_mean) / h_std
+  #   #normalizatiom
+  #   h_mean = jnp.mean(flat_h, axis=0, keepdims=True)
+  #   h_std = jnp.std(flat_h, axis=0, keepdims=True) + 1e-6
+  #   print(flat_rew)
+  #   flat_h= (flat_h - h_mean) / h_std
 
-    pred_mean = jnp.mean(pred_h , axis=0, keepdims=True)
-    pred_std = jnp.std(pred_h , axis=0, keepdims=True) + 1e-6
-    pred_h = (pred_h  - pred_mean) / pred_std
+  #   pred_mean = jnp.mean(pred_h , axis=0, keepdims=True)
+  #   pred_std = jnp.std(pred_h , axis=0, keepdims=True) + 1e-6
+  #   pred_h = (pred_h  - pred_mean) / pred_std
 
-    rew_mean = jnp.mean(flat_rew , axis=0, keepdims=True)
-    rew_std = jnp.std(flat_rew, axis=0, keepdims=True) + 1e-6
-    flat_rew = (flat_rew - rew_mean) / rew_std
+  #   rew_mean = jnp.mean(flat_rew , axis=0, keepdims=True)
+  #   rew_std = jnp.std(flat_rew, axis=0, keepdims=True) + 1e-6
+  #   flat_rew = (flat_rew - rew_mean) / rew_std
 
-    # Random permutation across flattened examples to form pairs
-    N = flat_h.shape[0]
-    perm = jax.random.permutation(nj.seed(), N)
-    flat_h2 = flat_h[perm]
-    pred_h2 = pred_h[perm]
-    flat_rew2 = flat_rew[perm]
+  #   # Random permutation across flattened examples to form pairs
+  #   N = flat_h.shape[0]
+  #   perm = jax.random.permutation(nj.seed(), N)
+  #   flat_h2 = flat_h[perm]
+  #   pred_h2 = pred_h[perm]
+  #   flat_rew2 = flat_rew[perm]
 
-    # Elementwise (per-dim) smooth_l1 distances
-    z_dist = smooth_l1(flat_h, flat_h2)                 # [N, D]
-    transition_dist = smooth_l1(pred_h, pred_h2)        # [N, D]
-    r_dist = smooth_l1(flat_rew[:, None], flat_rew2[:, None])  # [N, 1]
+  #   # Elementwise (per-dim) smooth_l1 distances
+  #   z_dist = smooth_l1(flat_h, flat_h2)                 # [N, D]
+  #   transition_dist = smooth_l1(pred_h, pred_h2)        # [N, D]
+  #   r_dist = smooth_l1(flat_rew[:, None], flat_rew2[:, None])  # [N, 1]
 
-    discount = getattr(self.config, 'bisim_discount', 0.99)
-    # Broadcast reward across representation dims and build bisim target
-    bisim_target = r_dist + discount * transition_dist  # [N, D]
+  #   discount = getattr(self.config, 'bisim_discount', 0.99)
+  #   # Broadcast reward across representation dims and build bisim target
+  #   bisim_target = r_dist + discount * transition_dist  # [N, D]
 
-    # Per-dim squared error and mean across dims -> scalar per flattened sample
-    per_dim_err = (z_dist - bisim_target) ** 2          # [N, D]
-    per_sample_err = jnp.mean(per_dim_err, axis=-1)     # [N]
+  #   # Per-dim squared error and mean across dims -> scalar per flattened sample
+  #   per_dim_err = (z_dist - bisim_target) ** 2          # [N, D]
+  #   per_sample_err = jnp.mean(per_dim_err, axis=-1)     # [N]
 
-    # Reshape back to (B, T) and pad a zero final column if needed by the caller
-    # Here repfeat was typically repfeat_now (i.e. original T was sequence length - 1),
-    # but to be safe we pad a zero column so returned shape always matches original (B, T)
-    # Determine B_orig and T_orig from rew shape passed by caller:
-    B_orig = rew.shape[0]
-    T_orig = rew.shape[1]
-    # per_sample_err has N = B_orig * T_orig
-    loss_per_timestep = per_sample_err.reshape((B_orig, T_orig))
-    # If the caller passed truncated sequence (e.g., repfeat_now with T-1), we still return (B, T)
-    # so no further padding here; the caller slices appropriately before passing.
-    return loss_per_timestep
+  #   # Reshape back to (B, T) and pad a zero final column if needed by the caller
+  #   # Here repfeat was typically repfeat_now (i.e. original T was sequence length - 1),
+  #   # but to be safe we pad a zero column so returned shape always matches original (B, T)
+  #   # Determine B_orig and T_orig from rew shape passed by caller:
+  #   B_orig = rew.shape[0]
+  #   T_orig = rew.shape[1]
+  #   # per_sample_err has N = B_orig * T_orig
+  #   loss_per_timestep = per_sample_err.reshape((B_orig, T_orig))
+  #   # If the caller passed truncated sequence (e.g., repfeat_now with T-1), we still return (B, T)
+  #   # so no further padding here; the caller slices appropriately before passing.
+  #   return loss_per_timestep
 
 
-  def update_transition_reward_model_loss(self, repfeat, act, next_repfeat, rew, training=True):
-    """
-    Transition + reward model loss that uses:
-      - deterministic RSSM one-step prediction (core + prior -> expected stoch)
-      - MSE/NLL-style transition loss between predicted features and next posterior features
-      - Reward prediction loss from predicted features using self.rew
-    Returns per-timestep loss shaped (B, T) with last timestep typically zero (if repfeat excludes final).
-    Gradients flow into self.dyn and self.rew so both can be trained using this loss.
-    """
-    # repfeat: pytree current features [B, T, ...]
-    # next_repfeat: pytree next features [B, T, ...] (usually aligned so both lengths equal and next_repfeat corresponds to t+1)
-    h = self.feat2tensor(repfeat)  # [B, T, D]
-    h_next = self.feat2tensor(next_repfeat)  # [B, T, D]
-    B, T, D = h.shape
+  # def update_transition_reward_model_loss(self, repfeat, act, next_repfeat, rew, training=True):
+  #   """
+  #   Transition + reward model loss that uses:
+  #     - deterministic RSSM one-step prediction (core + prior -> expected stoch)
+  #     - MSE/NLL-style transition loss between predicted features and next posterior features
+  #     - Reward prediction loss from predicted features using self.rew
+  #   Returns per-timestep loss shaped (B, T) with last timestep typically zero (if repfeat excludes final).
+  #   Gradients flow into self.dyn and self.rew so both can be trained using this loss.
+  #   """
+  #   # repfeat: pytree current features [B, T, ...]
+  #   # next_repfeat: pytree next features [B, T, ...] (usually aligned so both lengths equal and next_repfeat corresponds to t+1)
+  #   h = self.feat2tensor(repfeat)  # [B, T, D]
+  #   h_next = self.feat2tensor(next_repfeat)  # [B, T, D]
+  #   B, T, D = h.shape
 
-    if B == 0 or T == 0:
-      return jnp.zeros((B, T), dtype=jnp.float32)
+  #   if B == 0 or T == 0:
+  #     return jnp.zeros((B, T), dtype=jnp.float32)
 
-    # Flatten across batch/time
-    flat_h = h.reshape((-1, D))         # [N, D]
-    flat_h_next = h_next.reshape((-1, D))  # [N, D]
-    flat_rew = rew.reshape((-1,))       # [N]
+  #   # Flatten across batch/time
+  #   flat_h = h.reshape((-1, D))         # [N, D]
+  #   flat_h_next = h_next.reshape((-1, D))  # [N, D]
+  #   flat_rew = rew.reshape((-1,))       # [N]
 
-    # Flatten actions
-    flat_act = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), act)
+  #   # Flatten actions
+  #   flat_act = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), act)
 
-    # Build action embedding as RSSM.observe would do
-    act_emb = nn.DictConcat(self.act_space, 1)(flat_act)
+  #   # Build action embedding as RSSM.observe would do
+  #   act_emb = nn.DictConcat(self.act_space, 1)(flat_act)
 
-    # Build starts from repfeat flattened
-    starts = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), repfeat)
-    deter_flat = starts['deter']
-    stoch_flat = starts['stoch']
+  #   # Build starts from repfeat flattened
+  #   starts = jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), repfeat)
+  #   deter_flat = starts['deter']
+  #   stoch_flat = starts['stoch']
 
-    # Predict next deter via RSSM core and prior logits => expected stoch
-    deter_next = self.dyn._core(deter_flat, stoch_flat, act_emb)  # [N, deter]
-    prior_logits = self.dyn._prior(deter_next)                    # [N, stoch, classes]
-    expected_stoch = jax.nn.softmax(prior_logits, axis=-1)        # [N, stoch, classes]
+  #   # Predict next deter via RSSM core and prior logits => expected stoch
+  #   deter_next = self.dyn._core(deter_flat, stoch_flat, act_emb)  # [N, deter]
+  #   prior_logits = self.dyn._prior(deter_next)                    # [N, stoch, classes]
+  #   expected_stoch = jax.nn.softmax(prior_logits, axis=-1)        # [N, stoch, classes]
 
-    pred_feat = dict(deter=deter_next, stoch=expected_stoch, logit=prior_logits)
-    pred_h = self.feat2tensor(pred_feat).reshape((-1, D))         # [N, D]
+  #   pred_feat = dict(deter=deter_next, stoch=expected_stoch, logit=prior_logits)
+  #   pred_h = self.feat2tensor(pred_feat).reshape((-1, D))         # [N, D]
 
-    # Transition loss: use MSE between predicted embedding and next posterior embedding
-    trans_per_dim = (pred_h - flat_h_next) ** 2                  # [N, D]
-    trans_loss_per_sample = jnp.mean(trans_per_dim, axis=-1)     # [N]
+  #   # Transition loss: use MSE between predicted embedding and next posterior embedding
+  #   trans_per_dim = (pred_h - flat_h_next) ** 2                  # [N, D]
+  #   trans_loss_per_sample = jnp.mean(trans_per_dim, axis=-1)     # [N]
 
-    # Reward loss: predict reward from predicted embedding (same API as used elsewhere)
-    #print(self.feat2tensor(pred_feat).shape, self.feat2tensor(repfeat).shape,)
-    pred_rew = self.rew(self.feat2tensor(pred_feat).reshape((-1, T, D)), 2).pred().reshape((-1,))         # [N]
-    reward_loss_per_sample = (pred_rew - flat_rew) ** 2          # [N]
+  #   # Reward loss: predict reward from predicted embedding (same API as used elsewhere)
+  #   #print(self.feat2tensor(pred_feat).shape, self.feat2tensor(repfeat).shape,)
+  #   pred_rew = self.rew(self.feat2tensor(pred_feat).reshape((-1, T, D)), 2).pred().reshape((-1,))         # [N]
+  #   reward_loss_per_sample = (pred_rew - flat_rew) ** 2          # [N]
 
-    # Combine per-sample losses
-    per_sample_loss = trans_loss_per_sample + reward_loss_per_sample  # [N]
+  #   # Combine per-sample losses
+  #   per_sample_loss = trans_loss_per_sample + reward_loss_per_sample  # [N]
 
-    # Reshape to (B, T)
-    loss_per_timestep = per_sample_loss.reshape((B, T))
+  #   # Reshape to (B, T)
+  #   loss_per_timestep = per_sample_loss.reshape((B, T))
 
-    return loss_per_timestep
+  #   return loss_per_timestep
  
   def loss(self, carry, obs, prevact, training=True):
     enc_carry, dyn_carry = carry
@@ -460,14 +456,17 @@ class BisimAgent(embodied.jax.Agent):
     losses.update({k: v.mean(1).reshape((B, K)) for k, v in los.items()})
     metrics.update(mets)
 
-    # Enhanced bisim loss with encoder and transition model updates (from methods.py)
-    bisim_coef = getattr(self.config, 'bisim_coef', 0.5)
-    transition_coef = getattr(self.config, 'transition_coef', 1.0)
+    # Enhanced bisim loss with encoder and transition model updates 
+    #bisim_coef = getattr(self.config, 'bisim_coef', 0.5)
+    #transition_coef = getattr(self.config, 'transition_coef', 1.0)
     
-    repfeat_now = jax.tree.map(lambda x: x[:, :-1], repfeat)
-    repfeat_next = jax.tree.map(lambda x: x[:, 1:], repfeat)
-    act_now = {k: v[:, :-1] for k, v in prevact.items()}
-    rew_now = obs['reward'][:, :-1]
+    # repfeat_now = jax.tree.map(lambda x: x[:, :-1], repfeat)
+    # repfeat_next = jax.tcree.map(lambda x: x[:, 1:], repfeat)
+    # act_now = {k: v[:, :-1] for k, v in prevact.items()}
+    # rew_now = obs['reward'][:, :-1]
+    
+    #bisim
+    losses['bisim'], _= self.bisim_loss(carry, obs, prevact)
     
     # Encoder bisim loss (returns shape (B, T-1) or (B, T) depending on input); we expect (B, T-1)
     # encoder_bisim_loss = self.update_encoder_bisim(repfeat_now, act_now, rew_now, training)
@@ -560,45 +559,43 @@ class BisimAgent(embodied.jax.Agent):
     
     # Video preds
 
-    obs_tensor = self.feat2tensor(obsfeat)  # [RB, T//2, feat_dim]
-    img_tensor = self.feat2tensor(imgfeat)  # [RB, T//2, feat_dim]
+    # obs_tensor = self.feat2tensor(obsfeat)  # [RB, T//2, feat_dim]
+    # img_tensor = self.feat2tensor(imgfeat)  # [RB, T//2, feat_dim]
+    # feat_tensor = jnp.concatenate([obs_tensor, img_tensor], axis=1)  # [RB, T, feat_dim]
+    # feat_dim = feat_tensor.shape[-1]
+    # height = int(feat_dim**0.5)#jnp.sqrt(feat_dim).astype(int)
+    # width = feat_dim // height
     
-    feat_tensor = jnp.concatenate([obs_tensor, img_tensor], axis=1)  # [RB, T, feat_dim]
+    # # Truncate to make perfect rectangle
+    # used_dims = height * width
+    # features = feat_tensor.shape[-1]  # static or ShapedArray: used to build mask length
+    # # build a boolean mask shape (1,1,features) where first used_dims are True
+    # mask = (jnp.arange(features)[None, None, :] < used_dims).astype(feat_tensor.dtype)
+    # # zero out the trailing dims and then reshape
+    # feat_masked = feat_tensor * mask
+    # feat_reshaped = feat_masked.reshape(RB, T, height, width, 1)
     
-    feat_dim = feat_tensor.shape[-1]
-    height = int(feat_dim**0.5)#jnp.sqrt(feat_dim).astype(int)
-    width = feat_dim // height
+    # # Normalize to [0, 255] for visualization
+    # feat_min = feat_reshaped.min(axis=(2, 3), keepdims=True)
+    # feat_max = feat_reshaped.max(axis=(2, 3), keepdims=True)
+    # feat_norm = (feat_reshaped - feat_min) / (feat_max - feat_min + 1e-8)
+    # feat_img = (feat_norm * 255).astype(jnp.uint8)
     
-    # Truncate to make perfect rectangle
-    used_dims = height * width
-    features = feat_tensor.shape[-1]  # static or ShapedArray: used to build mask length
-    # build a boolean mask shape (1,1,features) where first used_dims are True
-    mask = (jnp.arange(features)[None, None, :] < used_dims).astype(feat_tensor.dtype)
-    # zero out the trailing dims and then reshape
-    feat_masked = feat_tensor * mask
-    feat_reshaped = feat_masked.reshape(RB, T, height, width, 1)
+    # # Convert to RGB
+    # feat_img = jnp.repeat(feat_img, 3, axis=-1)
     
-    # Normalize to [0, 255] for visualization
-    feat_min = feat_reshaped.min(axis=(2, 3), keepdims=True)
-    feat_max = feat_reshaped.max(axis=(2, 3), keepdims=True)
-    feat_norm = (feat_reshaped - feat_min) / (feat_max - feat_min + 1e-8)
-    feat_img = (feat_norm * 255).astype(jnp.uint8)
+    # # Add borders (green for obs, red for imagination)
+    # feat_img = jnp.pad(feat_img, [[0, 0], [0, 0], [2, 2], [2, 2], [0, 0]])
+    # mask = jnp.zeros(feat_img.shape, bool).at[:, :, 2:-2, 2:-2, :].set(True)
+    # border = jnp.full((T, 3), jnp.array([0, 255, 0]), jnp.uint8)
+    # border = border.at[T // 2:].set(jnp.array([255, 0, 0], jnp.uint8))
+    # feat_img = jnp.where(mask, feat_img, border[None, :, None, None, :])
     
-    # Convert to RGB
-    feat_img = jnp.repeat(feat_img, 3, axis=-1)
-    
-    # Add borders (green for obs, red for imagination)
-    feat_img = jnp.pad(feat_img, [[0, 0], [0, 0], [2, 2], [2, 2], [0, 0]])
-    mask = jnp.zeros(feat_img.shape, bool).at[:, :, 2:-2, 2:-2, :].set(True)
-    border = jnp.full((T, 3), jnp.array([0, 255, 0]), jnp.uint8)
-    border = border.at[T // 2:].set(jnp.array([255, 0, 0], jnp.uint8))
-    feat_img = jnp.where(mask, feat_img, border[None, :, None, None, :])
-    
-    # Add spacing and create grid
-    feat_img = jnp.concatenate([feat_img, 0 * feat_img[:, :10]], 1)
-    B, T, H, W, C = feat_img.shape
-    grid = feat_img.transpose((1, 2, 0, 3, 4)).reshape((T, H, B * W, C))
-    metrics[f'openloop/dyn_features'] = grid
+    # # Add spacing and create grid
+    # feat_img = jnp.concatenate([feat_img, 0 * feat_img[:, :10]], 1)
+    # B, T, H, W, C = feat_img.shape
+    # grid = feat_img.transpose((1, 2, 0, 3, 4)).reshape((T, H, B * W, C))
+    # metrics[f'openloop/dyn_features'] = grid
     carry = (*new_carry, {k: data[k][:, -1] for k in self.act_space})
     return carry, metrics
 
