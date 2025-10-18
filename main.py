@@ -111,7 +111,7 @@ def inspect_env(task, index):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inspect dreamerv3 env.step() outputs")
-    parser.add_argument("--task", default="dmc_cheetah_run", help="Task string, e.g. dmc_cheetah_run")
+    parser.add_argument("--task", default="dmc_walker_walk", help="Task string, e.g. dmc_walker_walk")
     parser.add_argument("--index", type=int, default=0, help="Env index")
     args = parser.parse_args()
     inspect_env(args.task, args.index)
