@@ -198,7 +198,7 @@ class BisimAgent(embodied.jax.Agent):
    
     # Build permuted targets and detach them so targets are fixed
     perm = jax.random.permutation(nj.seed(), B)
-    z2 = sg(z[perm])
+    z2 = z[perm]
     p2 = sg(p[perm])
 
     # reward targets and detach if needed
@@ -216,7 +216,7 @@ class BisimAgent(embodied.jax.Agent):
     bisimilarity = r_dist + discount * jnp.mean(jnp.abs(p-p2), axis=-1)
     bisimilarity = sg(bisimilarity)
     # Compare representation distance (reduce along feature dim, mean over time/batch):
-    loss = jnp.abs(bisimilarity -  z_dist )**2 # scalar
+    loss = jnp.sum(jnp.abs(bisimilarity -  z_dist )**2)/z.shape[-1] # scalar
     metrics = {'bisim_rep_rms': jnp.mean(z_dist)}
 
     # aux should match Optimizer expected aux shape if using has_aux=True
@@ -238,7 +238,6 @@ class BisimAgent(embodied.jax.Agent):
         dyn_carry, tokens, prevact, reset, training)
     losses.update(los)
     metrics.update(mets)
-    losses['bisim']= self.bisim_loss(carry, obs, prevact)
  
     #bisim
     #dec_carry, dec_entries, recons = self.dec(
@@ -287,6 +286,7 @@ class BisimAgent(embodied.jax.Agent):
         horizon=self.config.horizon,
         **self.config.imag_loss)
     losses.update({k: v.mean(1).reshape((B, K)) for k, v in los.items()})
+    losses['bisim']= self.bisim_loss(carry, obs, prevact)
     metrics.update(mets)
     # Enhanced bisim loss with encoder and transition model updates 
     #bisim_coef = getattr(self.config, 'bisim_coef', 0.5)
