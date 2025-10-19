@@ -9,6 +9,7 @@ from dm_control import suite
 from . import from_dm
 from dm_control import suite
 from embodied.envs import distractors
+from embodied.envs import cleanup 
 
 class DMC(embodied.Env):
 
@@ -38,6 +39,8 @@ class DMC(embodied.Env):
         env = getattr(basic_rodent_2020, task)()
       else:
         env = suite.load(domain_name=domain, task_name=task)
+        cleanup.register_env(env)
+        
     self._dmenv = env
     self._env = from_dm.FromDM(self._dmenv)
     self._env = embodied.wrappers.ActionRepeat(self._env, repeat)

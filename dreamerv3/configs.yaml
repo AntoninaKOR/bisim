@@ -185,7 +185,7 @@ dmc_proprio:
 
 dmc_vision:
   task: dmc_walker_walk
-  eenv.dmc.proprio: False
+  env.dmc.proprio: False
   run: {steps: 1.1e6, train_ratio: 256}
 
 
@@ -218,7 +218,7 @@ debug_bisim:
   batch_size: 8
   batch_length: 10
   report_length: 5
-  jax: {platform: cpu, debug: True, prealloc: False}
+  jax: {platform: cpu, debug: True, prealloc: True}
   run: {envs: 4, report_every: 10, log_every: 5, save_every: 15, train_ratio: 8, debug: True}
   replay.size: 1e4
   agent:

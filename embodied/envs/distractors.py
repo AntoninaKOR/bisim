@@ -27,6 +27,7 @@ import re
 import numpy as np
 import imageio
 from PIL import Image, ImageDraw
+from embodied.envs import cleanup 
 
 # -------------------------
 # Base sources (images/video/noise/color)
@@ -180,6 +181,7 @@ def make_bg_source(img_source, height, width, grayscale=False, total_frames=1000
             from embodied.envs.n_body_problem import Planets  # type: ignore
             # If import works, use Planets but still render with PIL for speed.
             planets = Planets(num_bodies=num_bodies, num_dimensions=2, dt=dt, contained_in_a_box=True)
+            cleanup.register_env(planets)
             class WrappedPlanets:
                 def __init__(self, planets, shape, radius, palette=None):
                     self.planets = planets
