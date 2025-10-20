@@ -93,7 +93,7 @@ class BisimAgent(embodied.jax.Agent):
     
     # Ensure bisim loss is in scales
     if 'bisim' not in scales:
-      scales['bisim'] = getattr(config, 'bisim_coef', 0.5)
+      scales['bisim'] = getattr(config, 'bisim_coef', 1)
     
     
     self.scales = scales
@@ -209,14 +209,14 @@ class BisimAgent(embodied.jax.Agent):
     r_dist = jnp.abs(rew-rew2)   # reward distance (detached)
   
     # Combine into bisim target and detach target
-    discount = getattr(self.config, 'bisim_discount', 0.99)
+    discount = getattr(self.config, 'bisim_discount', 0.5)
     # If transition_dist exists, include it; else only reward
     # bisimilarity = r_dist + discount * jnp.mean(transition_dist, axis=-1)
     #I"M SURE WHICH IMPLEMENTATION OF USEFUL
     bisimilarity = r_dist + discount * jnp.mean(jnp.abs(p-p2), axis=-1)
     bisimilarity = sg(bisimilarity)
     # Compare representation distance (reduce along feature dim, mean over time/batch):
-    loss = jnp.sum(jnp.abs(bisimilarity -  z_dist )**2)/z.shape[-1] # scalar
+    loss = jnp.abs(bisimilarity -  z_dist +1e-5)**2 # scalar
     metrics = {'bisim_rep_rms': jnp.mean(z_dist)}
 
     # aux should match Optimizer expected aux shape if using has_aux=True
@@ -248,6 +248,7 @@ class BisimAgent(embodied.jax.Agent):
     if self.config.contdisc:
       con *= 1 - 1 / self.config.horizon
     losses['con'] = self.con(self.feat2tensor(repfeat), 2).loss(con)
+    losses['bisim']= self.bisim_loss(carry, obs, prevact)
     #for key, recon in recons.items():
     #  space, value = self.obs_space[key], obs[key]
     #  assert value.dtype == space.dtype, (key, space, value.dtype)
@@ -286,7 +287,6 @@ class BisimAgent(embodied.jax.Agent):
         horizon=self.config.horizon,
         **self.config.imag_loss)
     losses.update({k: v.mean(1).reshape((B, K)) for k, v in los.items()})
-    losses['bisim']= self.bisim_loss(carry, obs, prevact)
     metrics.update(mets)
     # Enhanced bisim loss with encoder and transition model updates 
     #bisim_coef = getattr(self.config, 'bisim_coef', 0.5)

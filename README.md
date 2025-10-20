@@ -21,7 +21,7 @@ Training script:
 ```sh
 python dreamerv3/main.py \
   --logdir ~/logdir/dreamer/{timestamp} \
-  --configs dmc_finger\
+  --configs dmc_vision\
   --run.train_ratio 32
 ```
 
